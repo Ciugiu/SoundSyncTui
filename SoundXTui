@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+CYAN=$'\033[1;36m'
+GREEN=$'\033[1;32m'
+YELLOW=$'\033[1;33m'
+RED=$'\033[1;31m'
+RESET=$'\033[0m'
+SELECTED=$'\033[1;7;36m'
+
+COMBINED_SINK="combined_output"
+TMPDIR_SCRIPT=$(mktemp -d)
+
+cleanup() {
+    tput rmcup
+    tput cnorm
+    rm -rf "$TMPDIR_SCRIPT"
+}
+trap cleanup EXIT INT TERM
+
+tput smcup
+tput civis
+
+# --- rendering ---
+
+LINES_BUF=()
+buf() { LINES_BUF+=("$1"); }
+
+strip_ansi() {
+    printf '%s' "$1" | sed $'s/\033\\[[0-9;]*[A-Za-z]//g'
+}
+
+flush_centered() {
+    local rows cols
+    rows=$(tput lines 2>/dev/null || echo 24)
+    cols=$(tput cols  2>/dev/null || echo 80)
+
+    local n=${#LINES_BUF[@]}
+    local max_w=0
+    for line in "${LINES_BUF[@]}"; do
+        local plain w
+        plain=$(strip_ansi "$line")
+        w=${#plain}
+        [[ $w -gt $max_w ]] && max_w=$w
+    done
+
+    local v_pad=$(( (rows - n) / 2 ))
+    local h_pad=$(( (cols - max_w) / 2 ))
+    [[ $v_pad -lt 0 ]] && v_pad=0
+    [[ $h_pad -lt 0 ]] && h_pad=0
+
+    printf '\033[2J\033[H'
+    for ((i=0; i<v_pad; i++)); do echo; done
+
+    local hstr
+    hstr=$(printf '%*s' "$h_pad" '')
+    for line in "${LINES_BUF[@]}"; do
+        echo "${hstr}${line}"
+    done
+
+    LINES_BUF=()
+}
+
+header() {
+    buf "${CYAN}${BOLD}╔══════════════════════════════╗${RESET}"
+    buf "${CYAN}${BOLD}║         SoundXTui            ║${RESET}"
+    buf "${CYAN}${BOLD}╚══════════════════════════════╝${RESET}"
+    buf ""
+}
+
+# --- input ---
+
+get_key() {
+    IFS= read -rsn1 key < /dev/tty
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 -t 0.1 seq < /dev/tty
+        key="${key}${seq}"
+    fi
+}
+
+# --- spinner (centered) ---
+
+spin() {
+    local msg="$1" pid="$2"
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local rows cols h_pad hstr i=0
+    rows=$(tput lines 2>/dev/null || echo 24)
+    cols=$(tput cols  2>/dev/null || echo 80)
+    h_pad=$(( (cols - ${#msg} - 4) / 2 ))
+    [[ $h_pad -lt 0 ]] && h_pad=0
+    hstr=$(printf '%*s' "$h_pad" '')
+
+    printf '\033[2J\033[H'
+    tput cup $((rows / 2)) 0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r${hstr}${CYAN}${frames[$i]}${RESET}  %s" "$msg"
+        i=$(( (i+1) % ${#frames[@]} ))
+        sleep 0.08
+    done
+    printf "\r\033[K"
+}
+
+# --- screens ---
+
+main_menu() {
+    local options=("Activate" "Deactivate" "Exit")
+    local cursor=0
+
+    while true; do
+        LINES_BUF=()
+        header
+        buf "${BOLD}Select action:${RESET}"
+        buf ""
+        for i in "${!options[@]}"; do
+            if [[ $i -eq $cursor ]]; then
+                buf "${SELECTED}  › ${options[$i]}  ${RESET}"
+            else
+                buf "${DIM}    ${options[$i]}${RESET}"
+            fi
+        done
+        buf ""
+        buf "${DIM}↑/↓ navigate   enter select   q quit${RESET}"
+        flush_centered
+
+        get_key
+        case "$key" in
+            $'\x1b[A') ((cursor > 0)) && ((cursor--)) ;;
+            $'\x1b[B') ((cursor < ${#options[@]}-1)) && ((cursor++)) ;;
+            '')
+                case "${options[$cursor]}" in
+                    Activate)   activate_flow ;;
+                    Deactivate) deactivate_flow ;;
+                    Exit)       exit 0 ;;
+                esac
+                ;;
+            q|Q) exit 0 ;;
+        esac
+    done
+}
+
+sink_picker() {
+    pactl list sinks short > "$TMPDIR_SCRIPT/sinks_raw" 2>/dev/null &
+    spin "Scanning audio outputs..." $!
+    wait
+
+    mapfile -t sink_names  < <(awk '{print $2}' "$TMPDIR_SCRIPT/sinks_raw")
+    mapfile -t sink_states < <(awk '{print $5}' "$TMPDIR_SCRIPT/sinks_raw")
+
+    if [[ ${#sink_names[@]} -eq 0 ]]; then
+        LINES_BUF=(); header; buf "${RED}No sinks found.${RESET}"; flush_centered
+        sleep 2; return 1
+    fi
+
+    local -a selected=()
+    for i in "${!sink_names[@]}"; do selected[$i]=0; done
+
+    local cursor=0 warn=""
+
+    while true; do
+        LINES_BUF=()
+        header
+        buf "${BOLD}Choose output sinks:${RESET}"
+        buf "${DIM}x to toggle   enter confirm   q back${RESET}"
+        buf ""
+
+        for i in "${!sink_names[@]}"; do
+            local name="${sink_names[$i]}"
+            local state="${sink_states[$i]}"
+            local cb="[ ]"
+            [[ ${selected[$i]} -eq 1 ]] && cb="${GREEN}[✓]${RESET}"
+            local sc="${DIM}"
+            [[ "$state" == "RUNNING" ]] && sc="${GREEN}"
+
+            if [[ $i -eq $cursor ]]; then
+                # strip colors from cb for selected row so RESET doesn't break highlight
+                local cb_plain="[ ]"
+                [[ ${selected[$i]} -eq 1 ]] && cb_plain="[✓]"
+                buf "${SELECTED}  › $cb_plain $name  ($state)  ${RESET}"
+            else
+                buf "    $cb ${DIM}$name${RESET}  ${sc}($state)${RESET}"
+            fi
+        done
+
+        if [[ -n "$warn" ]]; then
+            buf ""; buf "${YELLOW}${warn}${RESET}"; warn=""
+        fi
+
+        buf ""
+        buf "${DIM}↑/↓ navigate   x toggle   enter confirm   q back${RESET}"
+        flush_centered
+
+        get_key
+        case "$key" in
+            $'\x1b[A') ((cursor > 0)) && ((cursor--)) ;;
+            $'\x1b[B') ((cursor < ${#sink_names[@]}-1)) && ((cursor++)) ;;
+            x|X)
+                [[ ${selected[$cursor]} -eq 0 ]] && selected[$cursor]=1 || selected[$cursor]=0
+                ;;
+            '')
+                local picked=()
+                for i in "${!selected[@]}"; do
+                    [[ ${selected[$i]} -eq 1 ]] && picked+=("${sink_names[$i]}")
+                done
+                if [[ ${#picked[@]} -lt 2 ]]; then
+                    warn="Select at least 2 sinks."
+                else
+                    printf '%s\n' "${picked[@]}" > "$TMPDIR_SCRIPT/chosen"
+                    return 0
+                fi
+                ;;
+            q|Q) return 1 ;;
+        esac
+    done
+}
+
+activate_flow() {
+    sink_picker || return
+    mapfile -t chosen < "$TMPDIR_SCRIPT/chosen"
+
+    pactl unload-module module-combine-sink 2>/dev/null
+
+    local slaves
+    slaves=$(IFS=','; echo "${chosen[*]}")
+
+    pactl load-module module-combine-sink \
+        sink_name="$COMBINED_SINK" \
+        slaves="$slaves" \
+        sink_properties=device.description="Combined_Output" \
+        > "$TMPDIR_SCRIPT/modid" 2>"$TMPDIR_SCRIPT/moderr" &
+    spin "Activating combined output..." $!
+    wait
+
+    local mod_id
+    mod_id=$(cat "$TMPDIR_SCRIPT/modid")
+
+    LINES_BUF=(); header
+
+    if [[ ! "$mod_id" =~ ^[0-9]+$ ]]; then
+        buf "${RED}Failed:${RESET} $(cat "$TMPDIR_SCRIPT/moderr")"
+        buf ""; buf "${DIM}Press any key to return...${RESET}"
+        flush_centered; get_key; return
+    fi
+
+    pactl set-default-sink "$COMBINED_SINK"
+    while IFS= read -r idx; do
+        pactl move-sink-input "$idx" "$COMBINED_SINK" 2>/dev/null
+    done < <(pactl list sink-inputs short | awk '{print $1}')
+
+    buf "${GREEN}${BOLD}Combined sink active!${RESET}"
+    buf ""
+    buf "${DIM}Outputs:${RESET}"
+    for s in "${chosen[@]}"; do buf "  ${GREEN}•${RESET} $s"; done
+    buf ""; buf "${DIM}Press any key to return...${RESET}"
+    flush_centered; get_key
+}
+
+deactivate_flow() {
+    local fallback
+    fallback=$(pactl list sinks short | awk -v c="$COMBINED_SINK" '$2 != c {print $2; exit}')
+
+    pactl unload-module module-combine-sink 2>/dev/null &
+    spin "Deactivating combined output..." $!
+    wait
+
+    LINES_BUF=(); header
+
+    if [[ -n "$fallback" ]]; then
+        pactl set-default-sink "$fallback"
+        buf "${GREEN}Reverted to:${RESET}"
+        buf "  ${BOLD}$fallback${RESET}"
+    else
+        buf "${YELLOW}No fallback sink found. Set default manually.${RESET}"
+    fi
+
+    buf ""; buf "${DIM}Press any key to return...${RESET}"
+    flush_centered; get_key
+}
+
+main_menu
