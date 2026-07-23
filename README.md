@@ -1,8 +1,8 @@
-# SoundXTui
+# SoundSync Tui
 
 A minimal terminal UI for combining PulseAudio output sinks — route audio to multiple devices simultaneously (e.g. speakers + headphones) with a few keystrokes.
 
-![Main menu](Screenshots/Menu.png)
+![Main menu](docs/screenshots/Menu.png)
 
 ## Features
 
@@ -22,7 +22,7 @@ A minimal terminal UI for combining PulseAudio output sinks — route audio to m
 ## Usage
 
 ```sh
-./SoundXTui
+./SoundSyncTui
 ```
 
 **Keybindings:**
@@ -38,21 +38,21 @@ A minimal terminal UI for combining PulseAudio output sinks — route audio to m
 
 Select **Activate** from the main menu, pick at least 2 sinks with `x`, then press `Enter`. The combined sink becomes the system default and all running streams are moved to it.
 
-![Sink picker](Screenshots/Combine.png)
+![Sink picker](docs/screenshots/Combine.png)
 
-![Activation result](Screenshots/CombineResult.png)
+![Activation result](docs/screenshots/CombineResult.png)
 
 ### Deactivate
 
 Select **Deactivate** to unload the combined sink and automatically revert to the next available output.
 
-![Deactivate result](Screenshots/Deactivate.png)
+![Deactivate result](docs/screenshots/Deactivate.png)
 
 ## Installation
 
 Copy the script to somewhere on your `$PATH` and make it executable:
 
 ```sh
-cp SoundXTui ~/.local/bin/SoundXTui
-chmod +x ~/.local/bin/SoundXTui
+cp SoundSyncTui ~/.local/bin/SoundSyncTui
+chmod +x ~/.local/bin/SoundSyncTui
 ```

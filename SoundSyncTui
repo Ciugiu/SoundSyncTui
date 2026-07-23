@@ -64,7 +64,7 @@ flush_centered() {
 
 header() {
     buf "${CYAN}${BOLD}╔══════════════════════════════╗${RESET}"
-    buf "${CYAN}${BOLD}║         SoundXTui            ║${RESET}"
+    buf "${CYAN}${BOLD}║       SoundSync Tui          ║${RESET}"
     buf "${CYAN}${BOLD}╚══════════════════════════════╝${RESET}"
     buf ""
 }
